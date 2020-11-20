@@ -29,7 +29,8 @@ class ImportScripts::Bbpress < ImportScripts::Base
   def execute
     import_users
     import_categories
-    import_topics_and_posts
+    import_questions
+    import_answers
     associate_categories_to_topics
     import_comments_and_staged_users
   end
@@ -41,10 +42,7 @@ class ImportScripts::Bbpress < ImportScripts::Base
     total_users = bbpress_query(<<-SQL
       SELECT COUNT(DISTINCT(u.id)) AS cnt
       FROM #{BB_PRESS_PREFIX}users u
-      LEFT JOIN #{BB_PRESS_PREFIX}posts p ON p.post_author = u.id
-      WHERE p.post_type IN ('dwqa-question', 'dwqa-answer')
-      AND p.post_status = 'publish'
-        AND user_email LIKE '%@%'
+      WHERE user_email LIKE '%@%'
     SQL
     ).first["cnt"]
 
@@ -52,10 +50,7 @@ class ImportScripts::Bbpress < ImportScripts::Base
       users = bbpress_query(<<-SQL
         SELECT u.id, user_nicename, display_name, user_email, user_registered, user_url, user_pass
           FROM #{BB_PRESS_PREFIX}users u
-          LEFT JOIN #{BB_PRESS_PREFIX}posts p ON p.post_author = u.id
          WHERE user_email LIKE '%@%'
-         AND p.post_type IN ('dwqa-question', 'dwqa-answer')
-         AND p.post_status = 'publish'
            AND u.id > #{last_user_id}
       GROUP BY u.id
       ORDER BY u.id
@@ -90,59 +85,134 @@ class ImportScripts::Bbpress < ImportScripts::Base
     puts "", "importing categories..."
 
     categories = bbpress_query(<<-SQL
-    SELECT DISTINCT t.term_id as id, 
-                    t.term_taxonomy_id, 
-                    terms.name AS category_name, 
-                    terms.slug AS slug, 
-                    t.description FROM wp_term_taxonomy AS t 
-                    LEFT JOIN wp_term_relationships AS r 
-                    ON r.term_taxonomy_id = t.term_taxonomy_id 
-                    LEFT JOIN wp_terms AS terms 
-                    ON terms.term_id = t.term_id 
-                    WHERE taxonomy = 'dwqa-question_category';
+      SELECT DISTINCT t.term_id as id, 
+                      t.term_taxonomy_id, 
+                      terms.name AS category_name, 
+                      terms.slug AS slug, 
+                      t.description FROM wp_term_taxonomy AS t 
+                      LEFT JOIN wp_term_relationships AS r 
+                      ON r.term_taxonomy_id = t.term_taxonomy_id 
+                      LEFT JOIN wp_terms AS terms 
+                      ON terms.term_id = t.term_id 
+                      WHERE taxonomy = 'dwqa-question_category';
     SQL
     )
 
     create_categories(categories) do |c|
-      category = { id: c['id'], name: c['category_name'] }
+      category = { id: c['id'], name: c['category_name'], description: c['description'] }
       category
     end
   end
 
-  def import_topics_and_posts
-    puts "", "importing topics and posts..."
-
+  def import_questions 
+    puts "", "importing questions"
+    
     last_post_id = -1
     total_posts = bbpress_query(<<-SQL
-      SELECT COUNT(*) count
-        FROM #{BB_PRESS_PREFIX}posts
-        WHERE post_status = 'publish'
-        AND post_type IN ('dwqa-question', 'dwqa-answer')
+    SELECT COUNT(p.ID) count
+    FROM wp_posts AS p 
+    
+    LEFT JOIN wp_postmeta AS m_author_email 
+    ON m_author_email.post_id = p.ID 
+    AND m_author_email.meta_key = '_dwqa_anonymous_email'
+    
+    LEFT JOIN wp_postmeta AS m_author 
+    ON m_author.post_id = p.ID 
+    AND m_author.meta_key = '_dwqa_anonymous_name'
+    
+    LEFT JOIN wp_postmeta AS m_votes 
+    ON m_votes.post_id = p.ID 
+    AND m_votes.meta_key = '_dwqa_votes'
+    
+    LEFT JOIN wp_postmeta 
+    AS m_status ON m_status.post_id = p.ID 
+    AND m_status.meta_key = '_dwqa_status'
+    
+    LEFT JOIN wp_postmeta AS m_question 
+    ON m_question.post_id = p.ID 
+    AND m_question.meta_key = '_question' 
+    
+    LEFT JOIN wp_postmeta AS m_views 
+    ON m_views.post_id = p.ID 
+    AND m_views.meta_key = '_dwqa_views'
+    
+    LEFT JOIN wp_term_relationships AS r 
+    ON r.object_id = p.ID
+    
+    LEFT JOIN wp_term_taxonomy AS tax 
+    ON tax.term_taxonomy_id = r.term_taxonomy_id
+    
+    LEFT JOIN wp_terms AS t 
+    ON t.term_id = tax.term_id
+    
+    WHERE p.post_type = 'dwqa-question' 
+    AND taxonomy = 'dwqa-question_category' 
     SQL
     ).first["count"]
-
+    
     batches(BATCH_SIZE) do |offset|
       posts = bbpress_query(<<-SQL
-        SELECT id,
-               post_author,
-               post_date,
-               post_content,
-               post_title,
-               post_type,
-               post_parent
-          FROM #{BB_PRESS_PREFIX}posts
-          WHERE post_status = 'publish'
-          AND post_type IN ('dwqa-question', 'dwqa-answer')
-          AND id > #{last_post_id}
-      ORDER BY id
-         LIMIT #{BATCH_SIZE}
+      SELECT p.ID, 
+      p.post_date, 
+      p.post_title, 
+      p.guid, 
+      p.post_type, 
+      m_votes.meta_value AS votes, 
+      m_status.meta_value AS question_status, 
+      m_author.meta_value AS author_name, 
+      m_author_email.meta_value AS author_email, 
+      m_question.meta_value AS question, 
+      m_views.meta_value AS views, 
+      p.post_content, t.term_id AS category_id, 
+      t.name AS category_name, 
+      t.slug AS category_slug 
+      FROM wp_posts AS p 
+
+      LEFT JOIN wp_postmeta AS m_author_email 
+      ON m_author_email.post_id = p.ID 
+      AND m_author_email.meta_key = '_dwqa_anonymous_email'
+
+      LEFT JOIN wp_postmeta AS m_author 
+      ON m_author.post_id = p.ID 
+      AND m_author.meta_key = '_dwqa_anonymous_name'
+
+      LEFT JOIN wp_postmeta AS m_votes 
+      ON m_votes.post_id = p.ID 
+      AND m_votes.meta_key = '_dwqa_votes'
+
+      LEFT JOIN wp_postmeta 
+      AS m_status ON m_status.post_id = p.ID 
+      AND m_status.meta_key = '_dwqa_status'
+
+      LEFT JOIN wp_postmeta AS m_question 
+      ON m_question.post_id = p.ID 
+      AND m_question.meta_key = '_question' 
+
+      LEFT JOIN wp_postmeta AS m_views 
+      ON m_views.post_id = p.ID 
+      AND m_views.meta_key = '_dwqa_views'
+
+      LEFT JOIN wp_term_relationships AS r 
+      ON r.object_id = p.ID
+
+      LEFT JOIN wp_term_taxonomy AS tax 
+      ON tax.term_taxonomy_id = r.term_taxonomy_id
+
+      LEFT JOIN wp_terms AS t 
+      ON t.term_id = tax.term_id
+
+      WHERE p.post_type = 'dwqa-question' 
+      AND taxonomy = 'dwqa-question_category' 
+      AND p.ID > #{last_post_id}
+      ORDER BY p.ID
+      LIMIT #{BATCH_SIZE}
       SQL
       ).to_a
 
       break if posts.empty?
 
-      last_post_id = posts[-1]["id"].to_i
-      post_ids = posts.map { |p| p["id"].to_i }
+      last_post_id = posts[-1]["ID"].to_i
+      post_ids = posts.map { |p| p["ID"].to_i }
 
       next if all_records_exist?(:posts, post_ids)
 
@@ -157,8 +227,145 @@ class ImportScripts::Bbpress < ImportScripts::Base
                   # find_user_by_import_id(anon_names[p['id']]).try(:id) ||
                   -1
 
+        if user_id == -1
+          params = {
+            username: p['author_name'],
+            email: p['author_email'],
+            staged: true
+          }
+          if p['author_email']
+            user = create_user(params, p['author_name'])
+            user_id = user[:id]
+            p "created a new staged user #{user_id} from question"
+          else
+            skip = true # skip this entry as its not associated with any user
+          end
+        end
+
         post = {
-          id: p["id"],
+          id: p["ID"],
+          user_id: user_id,
+          raw: p["post_content"],
+          created_at: p["post_date"],
+          # like_count: posts_likes[p["id"]],
+          topic_id: nil
+        }
+
+        if post[:raw].present?
+          post[:raw].gsub!(/\<pre\>\<code(=[a-z]*)?\>(.*?)\<\/code\>\<\/pre\>/im) { "```\n#{@he.decode($2)}\n```" }
+        end
+
+          post[:category] = category_id_from_imported_category_id(p["post_parent"])
+          post[:title] = CGI.unescapeHTML(p["post_title"])
+
+        skip ? nil : post
+      end
+    end
+  end
+
+  def import_answers
+    puts "", "importing answers"
+
+    last_post_id = -1
+    total_posts = bbpress_query(<<-SQL
+    SELECT COUNT(p.ID) count
+    FROM wp_posts AS p
+
+    LEFT JOIN wp_postmeta AS m_author_email 
+    ON m_author_email.post_id = p.ID 
+    AND m_author_email.meta_key = '_dwqa_anonymous_email'
+
+    LEFT JOIN wp_postmeta AS m_author 
+    ON m_author.post_id = p.ID 
+    AND m_author.meta_key = '_dwqa_anonymous_name'
+
+    LEFT JOIN wp_postmeta AS m_votes 
+    ON m_votes.post_id = p.ID 
+    AND m_votes.meta_key = '_dwqa_votes'
+
+    LEFT JOIN wp_posts AS question 
+    ON question.id = p.post_parent
+
+    LEFT JOIN wp_users AS u 
+    ON u.ID = p.post_author 
+
+    WHERE p.post_type = 'dwqa-answer'
+    SQL
+    ).first["count"]
+
+    batches(BATCH_SIZE) do |offset|
+      posts = bbpress_query(<<-SQL
+      SELECT p.ID,
+      p.post_parent, 
+      p.post_date, 
+      p.post_type, 
+      m_votes.meta_value AS votes, 
+      IFNULL(m_author.meta_value,u.display_name) AS author_name, 
+      IFNULL(m_author_email.meta_value,u.user_email) AS author_email, 
+      p.post_content, question.post_title AS question_title 
+
+      FROM wp_posts AS p
+
+      LEFT JOIN wp_postmeta AS m_author_email 
+      ON m_author_email.post_id = p.ID 
+      AND m_author_email.meta_key = '_dwqa_anonymous_email'
+
+      LEFT JOIN wp_postmeta AS m_author 
+      ON m_author.post_id = p.ID 
+      AND m_author.meta_key = '_dwqa_anonymous_name'
+
+      LEFT JOIN wp_postmeta AS m_votes 
+      ON m_votes.post_id = p.ID 
+      AND m_votes.meta_key = '_dwqa_votes'
+
+      LEFT JOIN wp_posts AS question 
+      ON question.id = p.post_parent
+
+      LEFT JOIN wp_users AS u 
+      ON u.ID = p.post_author 
+
+      WHERE p.post_type = 'dwqa-answer' 
+      AND p.ID > #{last_post_id}
+      ORDER BY p.ID
+      LIMIT #{BATCH_SIZE}
+      SQL
+      ).to_a
+
+      break if posts.empty?
+
+      last_post_id = posts[-1]["ID"].to_i
+      post_ids = posts.map { |p| p["ID"].to_i }
+
+      next if all_records_exist?(:posts, post_ids)
+
+      post_ids_sql = post_ids.join(",")
+
+      create_posts(posts, total: total_posts, offset: offset) do |p|
+        skip = false
+
+        user_id = user_id_from_imported_user_id(p["post_author"]) ||
+                  find_user_by_import_id(p["post_author"]).try(:id) ||
+                  # user_id_from_imported_user_id(anon_names[p['id']]) ||
+                  # find_user_by_import_id(anon_names[p['id']]).try(:id) ||
+                  -1
+
+        if user_id == -1
+          params = {
+            username: p['author_name'],
+            email: p['author_email'],
+            staged: true
+          }
+          if p['author_email']
+            user = create_user(params, p['author_name'])
+            user_id = user[:id]
+            p "created a new staged user #{user_id} from answer"
+          else
+            skip = true
+          end
+        end
+
+        post = {
+          id: p["ID"],
           user_id: user_id,
           raw: p["post_content"],
           created_at: p["post_date"],
@@ -169,24 +376,19 @@ class ImportScripts::Bbpress < ImportScripts::Base
           post[:raw].gsub!(/\<pre\>\<code(=[a-z]*)?\>(.*?)\<\/code\>\<\/pre\>/im) { "```\n#{@he.decode($2)}\n```" }
         end
 
-        if p["post_type"] == "dwqa-question"
-          post[:category] = category_id_from_imported_category_id(p["post_parent"])
-          post[:title] = CGI.unescapeHTML(p["post_title"])
+        if parent = topic_lookup_from_imported_post_id(p["post_parent"])
+          post[:topic_id] = parent[:topic_id]
+          post[:reply_to_post_number] = parent[:post_number] if parent[:post_number] > 1
         else
-          if parent = topic_lookup_from_imported_post_id(p["post_parent"])
-            post[:topic_id] = parent[:topic_id]
-            post[:reply_to_post_number] = parent[:post_number] if parent[:post_number] > 1
-          else
-            puts "Skipping #{p["id"]}: #{p["post_content"][0..40]}"
-            skip = true
-          end
+          puts "Skipping #{p["id"]}: #{p["post_content"][0..40]}"
+          skip = true
         end
+
 
         skip ? nil : post
       end
     end
   end
-
 
   def import_comments_and_staged_users
     puts "", "importing comments and anonymous commenters ;) ..."
@@ -321,7 +523,7 @@ class ImportScripts::Bbpress < ImportScripts::Base
     
     category_assoc.each do |row|
       post_id = post_id_from_imported_post_id(row['id'])
-      topic = Post.find(post_id).topic
+      topic = Post.find_by_id(post_id)&.topic # find_by_ doesn't throw execption
       category_id = category_id_from_imported_category_id(row['term_id'])
       next if !topic || !category_id
       topic.category_id = category_id
