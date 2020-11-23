@@ -3,15 +3,15 @@
 require 'mysql2'
 require File.expand_path(File.dirname(__FILE__) + "/base.rb")
 
-class ImportScripts::Bbpress < ImportScripts::Base
+class ImportScripts::Jan < ImportScripts::Base
 
-  BB_PRESS_HOST            ||= ENV['BBPRESS_HOST'] || "localhost"
-  BB_PRESS_DB              ||= ENV['BBPRESS_DB'] || "bbpress"
-  BATCH_SIZE               ||= 1000
-  BB_PRESS_PW              ||= ENV['BBPRESS_PW'] || ""
-  BB_PRESS_USER            ||= ENV['BBPRESS_USER'] || "root"
-  BB_PRESS_PREFIX          ||= ENV['BBPRESS_PREFIX'] || "wp_"
-  BB_PRESS_ATTACHMENTS_DIR ||= ENV['BBPRESS_ATTACHMENTS_DIR'] || "/path/to/attachments"
+  JAN_HOST            ||= ENV['JAN_HOST'] || "localhost"
+  JAN_DB              ||= ENV['JAN_DB'] || ""
+  BATCH_SIZE          ||= 1000
+  JAN_PW              ||= ENV['JAN_PW'] || "password"
+  JAN_USER            ||= ENV['JAN_USER'] || "root"
+  JAN_PREFIX          ||= ENV['JAN_PREFIX'] || "wp_"
+  JAN_ATTACHMENTS_DIR ||= ENV['JAN_ATTACHMENTS_DIR'] || "/path/to/attachments"
 
   def initialize
     super
@@ -19,10 +19,10 @@ class ImportScripts::Bbpress < ImportScripts::Base
     @he = HTMLEntities.new
 
     @client = Mysql2::Client.new(
-      host: BB_PRESS_HOST,
-      username: BB_PRESS_USER,
-      database: BB_PRESS_DB,
-      password: BB_PRESS_PW,
+      host: JAN_HOST,
+      username: JAN_USER,
+      database: JAN_DB,
+      password: JAN_PW,
     )
   end
 
@@ -39,17 +39,17 @@ class ImportScripts::Bbpress < ImportScripts::Base
     puts "", "importing users..."
 
     last_user_id = -1
-    total_users = bbpress_query(<<-SQL
+    total_users = query(<<-SQL
       SELECT COUNT(DISTINCT(u.id)) AS cnt
-      FROM #{BB_PRESS_PREFIX}users u
+      FROM #{JAN_PREFIX}users u
       WHERE user_email LIKE '%@%'
     SQL
     ).first["cnt"]
 
     batches(BATCH_SIZE) do |offset|
-      users = bbpress_query(<<-SQL
+      users = query(<<-SQL
         SELECT u.id, user_nicename, display_name, user_email, user_registered, user_url, user_pass
-          FROM #{BB_PRESS_PREFIX}users u
+          FROM #{JAN_PREFIX}users u
          WHERE user_email LIKE '%@%'
            AND u.id > #{last_user_id}
       GROUP BY u.id
@@ -84,7 +84,7 @@ class ImportScripts::Bbpress < ImportScripts::Base
   def import_categories
     puts "", "importing categories..."
 
-    categories = bbpress_query(<<-SQL
+    categories = query(<<-SQL
       SELECT DISTINCT t.term_id as id, 
                       t.term_taxonomy_id, 
                       terms.name AS category_name, 
@@ -108,7 +108,7 @@ class ImportScripts::Bbpress < ImportScripts::Base
     puts "", "importing questions"
     
     last_post_id = -1
-    total_posts = bbpress_query(<<-SQL
+    total_posts = query(<<-SQL
     SELECT COUNT(p.ID) count
     FROM wp_posts AS p 
     
@@ -151,7 +151,7 @@ class ImportScripts::Bbpress < ImportScripts::Base
     ).first["count"]
     
     batches(BATCH_SIZE) do |offset|
-      posts = bbpress_query(<<-SQL
+      posts = query(<<-SQL
       SELECT p.ID, 
       p.post_date, 
       p.post_title, 
@@ -267,7 +267,7 @@ class ImportScripts::Bbpress < ImportScripts::Base
     puts "", "importing answers"
 
     last_post_id = -1
-    total_posts = bbpress_query(<<-SQL
+    total_posts = query(<<-SQL
     SELECT COUNT(p.ID) count
     FROM wp_posts AS p
 
@@ -294,7 +294,7 @@ class ImportScripts::Bbpress < ImportScripts::Base
     ).first["count"]
 
     batches(BATCH_SIZE) do |offset|
-      posts = bbpress_query(<<-SQL
+      posts = query(<<-SQL
       SELECT p.ID,
       p.post_parent, 
       p.post_date, 
@@ -394,9 +394,9 @@ class ImportScripts::Bbpress < ImportScripts::Base
     puts "", "importing comments and anonymous commenters ;) ..."
     comment_id_offset = 50000
     last_comment_id = -1
-    total_comments = bbpress_query(<<-SQL
+    total_comments = query(<<-SQL
       SELECT COUNT(*) count
-        FROM #{BB_PRESS_PREFIX}comments wpc
+        FROM #{JAN_PREFIX}comments wpc
         LEFT JOIN wp_posts p 
           ON wpc.comment_post_ID = p.ID 
           WHERE p.post_type = 'dwqa-answer' 
@@ -406,7 +406,7 @@ class ImportScripts::Bbpress < ImportScripts::Base
     ).first["count"]
 
     batches(BATCH_SIZE) do |offset|
-      comments = bbpress_query(<<-SQL
+      comments = query(<<-SQL
         SELECT comment_ID+#{comment_id_offset} as id,
                comment_post_ID,
                comment_author,
@@ -414,7 +414,7 @@ class ImportScripts::Bbpress < ImportScripts::Base
                comment_content,
                comment_date,
                user_id
-          FROM #{BB_PRESS_PREFIX}comments wpc
+          FROM #{JAN_PREFIX}comments wpc
           LEFT JOIN wp_posts p 
           ON wpc.comment_post_ID = p.ID 
           WHERE p.post_type = 'dwqa-answer' 
@@ -481,7 +481,7 @@ class ImportScripts::Bbpress < ImportScripts::Base
 
   def associate_categories_to_topics
     p 'asociating category to topics'
-    topic_count = bbpress_query(<<-SQL
+    topic_count = query(<<-SQL
       SELECT COUNT(*) as cnt
       FROM wp_posts AS p 
       LEFT JOIN wp_term_relationships AS tr 
@@ -499,7 +499,7 @@ class ImportScripts::Bbpress < ImportScripts::Base
     last_topic_id = -1
 
     batches(BATCH_SIZE) do |offset|
-      category_assoc = bbpress_query(<<-SQL
+      category_assoc = query(<<-SQL
       SELECT p.id, 
       tt.term_id 
       FROM wp_posts AS p 
@@ -533,10 +533,10 @@ class ImportScripts::Bbpress < ImportScripts::Base
     end
   end
 
-  def bbpress_query(sql)
+  def query(sql)
     @client.query(sql, cache_rows: false)
   end
 
 end
 
-ImportScripts::Bbpress.new.perform
+ImportScripts::Jan.new.perform
